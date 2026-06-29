@@ -2,12 +2,11 @@
 Monitor de citas — Consulado de España en La Habana
 Visado de residencia de familiares de españoles
 
-Flujo:
-1. Abrir el widget de citaconsular.es (Bookitit)
-2. Aceptar el dialog "Welcome / Bienvenido"
-3. Click en "Continue / Continuar"
-4. Leer si sale "No hay horas disponibles" o el calendario
-5. Notificar por Telegram solo cuando cambia de "sin citas" a "con citas"
+Versión 2 — más robusta:
+- Múltiples selectores para el botón Continue
+- Esperas más largas
+- Screenshot + HTML siempre, no solo en fallo
+- Logging detallado
 """
 
 import asyncio
@@ -41,10 +40,14 @@ TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "").strip()
 CHAT_ID = os.environ.get("CHAT_ID", "").strip()
 
 
+def log(msg: str) -> None:
+    print(f"[BOT] {msg}", flush=True)
+
+
 # --- Telegram ---
 def notify(message: str) -> None:
     if not TELEGRAM_TOKEN or not CHAT_ID:
-        print("⚠️  Falta TELEGRAM_TOKEN o CHAT_ID — no se envía notificación")
+        log("Falta TELEGRAM_TOKEN o CHAT_ID")
         return
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     try:
@@ -59,8 +62,9 @@ def notify(message: str) -> None:
             timeout=15,
         )
         r.raise_for_status()
+        log("Mensaje enviado a Telegram")
     except Exception as e:
-        print(f"❌ Error enviando a Telegram: {e}")
+        log(f"Error enviando a Telegram: {e}")
 
 
 # --- Estado ---
@@ -75,14 +79,40 @@ def write_state(value: str) -> None:
 
 
 # --- Scraping ---
+async def click_continue(page) -> bool:
+    """Intenta clickear el botón Continue con varios selectores."""
+    selectors = [
+        "text=Continue / Continuar",
+        "text=Continuar",
+        "text=Continue",
+        "button:has-text('Continuar')",
+        "button:has-text('Continue')",
+        "a:has-text('Continuar')",
+        "a:has-text('Continue')",
+        "input[type='submit'][value*='ontinu']",
+        "[onclick*='continu' i]",
+    ]
+    for sel in selectors:
+        try:
+            log(f"  Probando selector: {sel}")
+            loc = page.locator(sel).first
+            await loc.wait_for(state="visible", timeout=8000)
+            await loc.click()
+            log(f"  Click hecho con: {sel}")
+            return True
+        except Exception:
+            continue
+    return False
+
+
 async def check_availability() -> tuple[bool, str]:
-    """Devuelve (hay_disponibilidad, contenido_completo_para_debug)."""
     async with async_playwright() as p:
         browser = await p.chromium.launch(
             headless=True,
             args=[
                 "--disable-blink-features=AutomationControlled",
                 "--no-sandbox",
+                "--disable-dev-shm-usage",
             ],
         )
         context = await browser.new_context(
@@ -96,53 +126,67 @@ async def check_availability() -> tuple[bool, str]:
         )
         page = await context.new_page()
 
-        # Auto-aceptar el native dialog "Welcome / Bienvenido"
-        page.on("dialog", lambda d: asyncio.create_task(d.accept()))
+        async def handle_dialog(dialog):
+            log(f"  Dialog detectado: {dialog.message[:80]}")
+            await dialog.accept()
+
+        page.on("dialog", lambda d: asyncio.create_task(handle_dialog(d)))
 
         try:
+            log(f"Navegando a: {WIDGET_URL}")
             await page.goto(WIDGET_URL, wait_until="domcontentloaded", timeout=45000)
-            await asyncio.sleep(2)
+            log("DOM cargado")
 
-            # Click en "Continue / Continuar"
-            continue_btn = page.locator("text=Continue / Continuar").first
-            try:
-                await continue_btn.wait_for(state="visible", timeout=20000)
-                await continue_btn.click()
-            except Exception:
-                # Fallback: buscar por role
-                await page.get_by_role("button", name=lambda n: "Continu" in (n or "")).click()
-
-            # Esperar a que cargue el widget (iframe de Bookitit)
-            await page.wait_for_load_state("networkidle", timeout=30000)
             await asyncio.sleep(5)
 
-            # Recopilar contenido del documento principal + todos los iframes
+            await page.screenshot(path="step1_after_load.png", full_page=True)
+            log("Screenshot: step1_after_load.png")
+
+            log("Buscando botón Continue...")
+            clicked = await click_continue(page)
+
+            if not clicked:
+                log("No se encontró Continue, sigo de todos modos")
+                Path("debug_no_button.html").write_text(await page.content())
+
+            log("Esperando render del widget...")
+            try:
+                await page.wait_for_load_state("networkidle", timeout=30000)
+            except Exception:
+                log("networkidle no llegó")
+
+            await asyncio.sleep(7)
+
+            await page.screenshot(path="step2_final.png", full_page=True)
+            log("Screenshot: step2_final.png")
+
             full_content = await page.content()
-            for frame in page.frames:
+            log(f"HTML principal: {len(full_content)} chars")
+
+            for i, frame in enumerate(page.frames):
                 try:
                     frame_html = await frame.content()
-                    full_content += "\n\n--- FRAME ---\n\n" + frame_html
-                except Exception:
-                    pass
+                    log(f"  Frame {i}: {frame.url[:60]} — {len(frame_html)} chars")
+                    full_content += f"\n\n--- FRAME {i}: {frame.url} ---\n\n" + frame_html
+                except Exception as e:
+                    log(f"  Frame {i} no accesible: {e}")
 
-            no_disponible = any(
-                marker in full_content for marker in NO_AVAILABILITY_MARKERS
-            )
+            no_disponible = any(m in full_content for m in NO_AVAILABILITY_MARKERS)
+            log(f"'No hay horas disponibles' encontrado: {no_disponible}")
+
             return (not no_disponible), full_content
 
         finally:
             await browser.close()
 
 
-# --- Main ---
 async def main() -> int:
     try:
         available, content = await check_availability()
     except Exception as e:
         err = f"⚠️ *Error en bot de citas*\n\n`{type(e).__name__}: {e}`"
-        print(err)
+        log(err)
         traceback.print_exc()
-        # Solo notificar errores nuevos (no en cada run si el sitio cae)
         if read_state() != "error":
             notify(err)
             write_state("error")
@@ -151,7 +195,7 @@ async def main() -> int:
     prev = read_state()
     current = "available" if available else "unavailable"
 
-    print(f"Estado anterior: {prev} | Estado actual: {current}")
+    log(f"Estado anterior: {prev} | Estado actual: {current}")
 
     if available:
         if prev != "available":
@@ -165,16 +209,12 @@ async def main() -> int:
             )
             notify(msg)
         else:
-            print("Siguen abiertas — no renotifico.")
+            log("Siguen abiertas, no renotifico")
     else:
-        if prev == "available":
-            print("Se cerró la ventana de disponibilidad.")
-        # No notifico cuando NO hay citas; sería spam.
+        log("Sin citas — no notifico")
 
     write_state(current)
-
-    # Guardar un dump del HTML por si hay que depurar selectores
-    Path("last_run.html").write_text(content[:200_000])
+    Path("last_run.html").write_text(content[:300_000])
     return 0
 
 
