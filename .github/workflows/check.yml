@@ -2,14 +2,11 @@ name: Check Visa Appointments
 
 on:
   schedule:
-    # Cada 5 minutos. Nota: GitHub Actions cron suele tener latencia 5-15 min
-    # según carga. Para mayor fiabilidad, dispara también desde cron-job.org
-    # vía workflow_dispatch (ver README).
     - cron: "*/5 * * * *"
   workflow_dispatch: {}
 
 permissions:
-  contents: write  # necesario para commitear state.txt
+  contents: write
 
 concurrency:
   group: visa-check
@@ -41,13 +38,18 @@ jobs:
           CHAT_ID: ${{ secrets.CHAT_ID }}
         run: python monitor.py
 
-      - name: Upload debug HTML on failure
-        if: failure()
+      - name: Upload debug files (always)
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: last_run_html
-          path: last_run.html
+          name: debug-${{ github.run_number }}
+          path: |
+            step1_after_load.png
+            step2_final.png
+            last_run.html
+            debug_no_button.html
           retention-days: 3
+          if-no-files-found: ignore
 
       - name: Commit state change
         if: success()
