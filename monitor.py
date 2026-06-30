@@ -1,10 +1,6 @@
 """
 Monitor de citas — Consulado de España en La Habana
-
-VERSIÓN 7 - PLAYWRIGHT + STEALTH PLUGIN EFFECT
-- Delays largos entre acciones (simula humano)
-- Múltiples reintentos
-- Rate limiting realista
+VERSIÓN FINAL - CON IFRAME DETECTION
 """
 
 import asyncio
@@ -76,6 +72,7 @@ def notify_with_photo(message: str, photo_path: str) -> None:
         log("✓ Foto OK")
     except Exception as e:
         log(f"✗ Foto: {e}")
+        notify_text(message)
 
 def read_state() -> str:
     return STATE_FILE.read_text().strip() if STATE_FILE.exists() else "unknown"
@@ -83,26 +80,23 @@ def read_state() -> str:
 def write_state(value: str) -> None:
     STATE_FILE.write_text(value)
 
-async def click_button(page, timeout=10000) -> bool:
-    """Intenta hacer click en botón Continue con múltiples estrategias"""
+async def click_button(page) -> bool:
     selectors = [
         "text=Continue / Continuar",
         "text=Continuar",
         "button:has-text('Continuar')",
         "a:has-text('Continuar')",
-        "button[type='submit']",
     ]
     for sel in selectors:
         try:
-            await page.locator(sel).first.click(timeout=timeout)
-            log(f"✓ Click: {sel}")
+            await page.locator(sel).first.click(timeout=5000)
+            log(f"✓ Click Continue")
             return True
         except:
             pass
     return False
 
 async def check_availability_attempt(attempt: int) -> tuple[str, str, str]:
-    """Un intento de check"""
     log(f"\n--- Intento {attempt + 1} ---")
     
     async with async_playwright() as p:
@@ -113,8 +107,6 @@ async def check_availability_attempt(attempt: int) -> tuple[str, str, str]:
                 "--no-sandbox",
                 "--disable-dev-shm-usage",
                 "--disable-gpu",
-                "--disable-sync",
-                "--disable-extensions",
             ],
         )
         
@@ -134,48 +126,50 @@ async def check_availability_attempt(attempt: int) -> tuple[str, str, str]:
         page = await context.new_page()
 
         try:
-            # NAVEGACIÓN
-            log(f"🌐 GET {WIDGET_URL}")
+            log(f"🌐 Navegando...")
             await asyncio.sleep(random.uniform(3, 6))
             await page.goto(WIDGET_URL, wait_until="domcontentloaded", timeout=60000)
             log("✓ DOM loaded")
 
-            # ESPERA CLOUDFLARE (MUY LARGA)
-            log("⏳ Cloudflare check (50s)...")
-            for i in range(5):
-                await asyncio.sleep(10)
-                log(f"  {(i+1)*10}s...")
+            log("⏳ Cloudflare (50s)...")
+            await asyncio.sleep(50)
 
             await page.screenshot(path="step1_after_load.png", full_page=True)
 
-            # CLICK CONTINUE
             log("🔘 Click Continue...")
             await click_button(page)
             await asyncio.sleep(random.uniform(2, 4))
 
-            # ESPERA WIDGET (MUY LARGA)
-            log("⏳ Widget render (60s)...")
+            log("⏳ Widget (90s)...")
             try:
-                await page.wait_for_load_state("networkidle", timeout=50000)
+                await page.wait_for_load_state("networkidle", timeout=60000)
             except:
                 pass
             
-            for i in range(6):
-                await asyncio.sleep(10)
-                log(f"  {(i+1)*10}s...")
+            await asyncio.sleep(90)
 
             await page.screenshot(path="step2_final.png", full_page=True)
 
-            # OBTENER CONTENIDO
+            # CONTENIDO PRINCIPAL
             full_content = await page.content()
             log(f"✓ HTML: {len(full_content)} chars")
 
-            # ANALIZAR
+            # IFRAMES (IMPORTANTE!)
+            log(f"🔍 Frames: {len(page.frames)}")
+            for i, frame in enumerate(page.frames):
+                try:
+                    frame_content = await frame.content()
+                    log(f"  Frame {i}: {len(frame_content)} chars")
+                    full_content += f"\n\n--- FRAME {i} ---\n" + frame_content
+                except Exception as e:
+                    log(f"  Frame {i}: error")
+
+            # ANÁLISIS
             widget_loaded = any(m in full_content for m in WIDGET_LOADED_MARKERS)
             no_disponible = any(m in full_content for m in NO_AVAILABILITY_MARKERS)
             cloudflare_blocking = any(m in full_content for m in CLOUDFLARE_MARKERS)
 
-            log(f"📊 Widget: {widget_loaded} | Sin citas: {no_disponible} | CF: {cloudflare_blocking}")
+            log(f"📊 Widget: {widget_loaded} | Citas: {no_disponible} | CF: {cloudflare_blocking}")
 
             if not widget_loaded:
                 estado = "blocked" if cloudflare_blocking else "unknown"
@@ -188,14 +182,12 @@ async def check_availability_attempt(attempt: int) -> tuple[str, str, str]:
             await browser.close()
 
 async def check_availability() -> tuple[str, str, str]:
-    """Reintentos automáticos"""
-    for attempt in range(3):  # 3 intentos
+    for attempt in range(3):
         try:
             return await check_availability_attempt(attempt)
         except Exception as e:
-            log(f"❌ Intento {attempt + 1} falló: {e}")
+            log(f"❌ Fallo: {e}")
             if attempt < 2:
-                log(f"⏳ Esperando antes de reintentar...")
                 await asyncio.sleep(random.uniform(5, 10))
             else:
                 raise
@@ -219,12 +211,10 @@ async def main() -> int:
             msg = f"🎉 *¡CITAS DISPONIBLES!*\n\n👉 [Reservar]({WIDGET_URL})"
             notify_with_photo(msg, screenshot)
         write_state("available")
-
     elif estado == "unavailable":
         write_state("unavailable")
-
     elif estado == "blocked":
-        log("(Sin cambios - Cloudflare)")
+        log("(Sin cambios)")
 
     Path("last_run.html").write_text(content[:300_000])
     return 0
