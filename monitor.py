@@ -1,5 +1,5 @@
 """
-Monitor FINAL v10 - Botón Aceptar PRIMERO, luego Continue
+Monitor FINAL v11 - Flujo correcto: PUBLIC_URL → Click enlace → Aceptar → Continuar
 """
 
 import asyncio
@@ -12,8 +12,11 @@ from pathlib import Path
 import requests
 from playwright.async_api import async_playwright
 
-WIDGET_URL = "https://www.citaconsular.es/es/hosteds/widgetdefault/2686d3b68dc9e0db0ba3c6a20437e9cc7"
-PUBLIC_URL = "https://www.exteriores.gob.es/Consulados/lahabana/es/ServiciosConsulares/Paginas/index.aspx?scco=Cuba&scd=166&scca=Visados&scs=Visados+Nacionales+-+Visado+de+residencia+de+familiares"
+# URL PÚBLICA - Punto de entrada
+PUBLIC_URL = "https://www.exteriores.gob.es/Consulados/lahabana/es/ServiciosConsulares/Paginas/index.aspx?scco=Cuba&scd=166&scca=Visados&scs=Visados+Nacionales+-+Visado+de+residencia+de+familiares+de+personas+de+nacionalidad+espa%c3%b1ola"
+
+# URL del widget (para mostrar después)
+WIDGET_URL = "https://www.citaconsular.es/es/hosteds/widgetdefault/2686d3b68dc9e0ba3c6a20437e9cc7"
 STATE_FILE = Path("state.txt")
 
 WIDGET_MARKERS = ["bookitit", "Cancelar o consultar"]
@@ -80,28 +83,55 @@ async def check() -> tuple[str, str, str]:
         page = await c.new_page()
 
         try:
-            log("🌐 Navegando...")
-            await asyncio.sleep(3)
-            await page.goto(WIDGET_URL, wait_until="domcontentloaded", timeout=60000)
-            log("✓ DOM loaded")
-
-            log("⏳ Cloudflare (70s)...")
-            for i in range(7):
-                await asyncio.sleep(10)
-                log(f"  {(i+1)*10}s")
-
-            await page.screenshot(path="step1_after_load.png", full_page=True)
-
-            # ========== PASO 1: CLICK EN BOTÓN "ACEPTAR" (Modal rosa) ==========
-            log("🔘 PASO 1: Buscando botón ACEPTAR...")
-            aceptar_clicked = False
+            # ========== PASO 1: ENTRAR A LA URL PÚBLICA ==========
+            log("🌐 PASO 1: Navegando a página pública...")
+            await asyncio.sleep(2)
+            await page.goto(PUBLIC_URL, wait_until="domcontentloaded", timeout=60000)
+            log("✓ Página pública cargada")
+            await page.screenshot(path="step1_public_page.png", full_page=True)
             
-            # Selectores posibles para el botón "Aceptar"
+            await asyncio.sleep(3)
+
+            # ========== PASO 2: BUSCAR Y CLICKEAR ENLACE "Reservar cita de visados RFX" ==========
+            log("🔘 PASO 2: Buscando enlace para abrir widget...")
+            
+            link_selectors = [
+                "a:has-text('Reservar cita de visados RFX')",
+                "a[href*='citaconsular']",
+                "a:has-text('Reservar')",
+                "text='Reservar cita de visados RFX'",
+            ]
+            
+            link_clicked = False
+            for selector in link_selectors:
+                try:
+                    log(f"  Intentando selector: {selector}")
+                    link = page.locator(selector)
+                    await link.first.wait_for(state="visible", timeout=5000)
+                    await asyncio.sleep(random.uniform(1, 2))
+                    await link.first.click()
+                    log("✓ Click en enlace de reserva")
+                    link_clicked = True
+                    break
+                except Exception as e:
+                    log(f"  ✗ No encontrado: {type(e).__name__}")
+            
+            if not link_clicked:
+                log("⚠️ Enlace no encontrado, intentando esperar a widget...")
+            
+            await asyncio.sleep(5)
+
+            # ========== PASO 3: CLICK EN BOTÓN "ACEPTAR" (Modal rosa) ==========
+            log("🔘 PASO 3: Buscando botón ACEPTAR...")
+            await page.screenshot(path="step2_before_aceptar.png", full_page=True)
+            
+            aceptar_clicked = False
             aceptar_selectors = [
                 "button:has-text('Aceptar')",
                 "[onclick*='Aceptar']",
                 "button.btn:has-text('Aceptar')",
-                "text='Aceptar'",
+                ".btn-pink",
+                "button[aria-label*='Aceptar']",
             ]
             
             for selector in aceptar_selectors:
@@ -115,27 +145,25 @@ async def check() -> tuple[str, str, str]:
                     aceptar_clicked = True
                     break
                 except Exception as e:
-                    log(f"  ✗ No encontrado con '{selector}': {type(e).__name__}")
+                    log(f"  ✗ No encontrado: {type(e).__name__}")
             
             if not aceptar_clicked:
-                log("⚠️ Botón ACEPTAR no encontrado - continuando...")
+                log("⚠️ Botón ACEPTAR no encontrado")
             
-            # Esperar a que el modal desaparezca
             await asyncio.sleep(3)
-            await page.screenshot(path="step1b_after_aceptar.png", full_page=True)
+            await page.screenshot(path="step3_after_aceptar.png", full_page=True)
 
-            # ========== PASO 2: CLICK EN BOTÓN "CONTINUE" (verde) ==========
-            log("🔘 PASO 2: Buscando botón CONTINUE...")
-            continue_clicked = False
+            # ========== PASO 4: CLICK EN BOTÓN "CONTINUAR" (verde) ==========
+            log("🔘 PASO 4: Buscando botón CONTINUAR...")
             
-            # Selectores posibles para el botón "Continue"
+            continue_clicked = False
             continue_selectors = [
                 "button:has-text('Continuar')",
                 "button:has-text('Continue')",
                 "button:has-text('Continuar / Continue')",
                 "[onclick*='continue']",
                 "button.btn-success",
-                ".btn:has-text('Continuar')",
+                ".btn-green",
             ]
             
             for selector in continue_selectors:
@@ -145,18 +173,19 @@ async def check() -> tuple[str, str, str]:
                     await btn.first.wait_for(state="visible", timeout=5000)
                     await asyncio.sleep(random.uniform(1.5, 3))
                     await btn.first.click()
-                    log("✓ Click en CONTINUE")
+                    log("✓ Click en CONTINUAR")
                     continue_clicked = True
                     break
                 except Exception as e:
-                    log(f"  ✗ No encontrado con '{selector}': {type(e).__name__}")
+                    log(f"  ✗ No encontrado: {type(e).__name__}")
             
             if not continue_clicked:
-                log("⚠️ Botón CONTINUE no encontrado")
+                log("⚠️ Botón CONTINUAR no encontrado")
 
             await asyncio.sleep(5)
 
-            log("⏳ Widget (90s)...")
+            # ========== PASO 5: ESPERAR A WIDGET Y ANALIZAR ==========
+            log("⏳ PASO 5: Esperando widget (90s)...")
             try:
                 await page.wait_for_load_state("networkidle", timeout=80000)
             except:
@@ -166,7 +195,7 @@ async def check() -> tuple[str, str, str]:
                 await asyncio.sleep(10)
                 log(f"  {(i+1)*10}s")
 
-            await page.screenshot(path="step2_final.png", full_page=True)
+            await page.screenshot(path="step4_final.png", full_page=True)
 
             html = await page.content()
             log(f"✓ HTML: {len(html)} chars")
@@ -183,14 +212,14 @@ async def check() -> tuple[str, str, str]:
             has_no_citas = any(m in html for m in NO_CITAS)
             has_cf = any(m in html for m in CF_MARKERS)
 
-            log(f"📊 Widget: {has_widget} | Citas: {has_no_citas} | CF: {has_cf}")
+            log(f"📊 Widget: {has_widget} | Sin citas: {has_no_citas} | Cloudflare: {has_cf}")
 
             if not has_widget:
                 estado = "blocked" if has_cf else "unknown"
             else:
                 estado = "unavailable" if has_no_citas else "available"
 
-            return estado, html, "step2_final.png"
+            return estado, html, "step4_final.png"
 
         finally:
             await b.close()
