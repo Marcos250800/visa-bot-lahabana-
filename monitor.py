@@ -1,5 +1,5 @@
 """
-Monitor FINAL v9 - Buscar botón en iframes
+Monitor FINAL v10 - Botón Aceptar PRIMERO, luego Continue
 """
 
 import asyncio
@@ -12,8 +12,8 @@ from pathlib import Path
 import requests
 from playwright.async_api import async_playwright
 
-WIDGET_URL = "https://www.citaconsular.es/es/hosteds/widgetdefault/2686d3b68dc9e0ba3c6a20437e9cc7"
-PUBLIC_URL = "https://www.exteriores.gob.es/Consulados/lahabana/es/ServiciosConsulares/Paginas/index.aspx?scco=Cuba&scd=166&scca=Visados&scs=Visados+Nacionales+-+Visado+de+residencia+de+familiares+de+personas+de+nacionalidad+espa%c3%b1ola"
+WIDGET_URL = "https://www.citaconsular.es/es/hosteds/widgetdefault/2686d3b68dc9e0db0ba3c6a20437e9cc7"
+PUBLIC_URL = "https://www.exteriores.gob.es/Consulados/lahabana/es/ServiciosConsulares/Paginas/index.aspx?scco=Cuba&scd=166&scca=Visados&scs=Visados+Nacionales+-+Visado+de+residencia+de+familiares"
 STATE_FILE = Path("state.txt")
 
 WIDGET_MARKERS = ["bookitit", "Cancelar o consultar"]
@@ -92,37 +92,67 @@ async def check() -> tuple[str, str, str]:
 
             await page.screenshot(path="step1_after_load.png", full_page=True)
 
-            # CLICK BOTÓN - BUSCAR EN IFRAMES
-            log("🔘 Buscando botón...")
-            clicked = False
+            # ========== PASO 1: CLICK EN BOTÓN "ACEPTAR" (Modal rosa) ==========
+            log("🔘 PASO 1: Buscando botón ACEPTAR...")
+            aceptar_clicked = False
             
-            # Frame principal
-            try:
-                btn = page.locator("#idCaptchaButton")
-                await btn.wait_for(state="visible", timeout=5000)
-                await asyncio.sleep(random.uniform(2, 4))
-                await btn.click()
-                log("✓ Click OK (frame principal)")
-                clicked = True
-            except:
-                log("  No en frame principal")
+            # Selectores posibles para el botón "Aceptar"
+            aceptar_selectors = [
+                "button:has-text('Aceptar')",
+                "[onclick*='Aceptar']",
+                "button.btn:has-text('Aceptar')",
+                "text='Aceptar'",
+            ]
             
-            # Iframes
-            if not clicked:
-                for i, frame in enumerate(page.frames):
-                    try:
-                        btn = frame.locator("#idCaptchaButton")
-                        await btn.wait_for(state="visible", timeout=5000)
-                        await asyncio.sleep(random.uniform(2, 4))
-                        await btn.click()
-                        log(f"✓ Click OK (Frame {i})")
-                        clicked = True
-                        break
-                    except:
-                        pass
+            for selector in aceptar_selectors:
+                try:
+                    log(f"  Intentando selector: {selector}")
+                    btn = page.locator(selector)
+                    await btn.first.wait_for(state="visible", timeout=5000)
+                    await asyncio.sleep(random.uniform(1.5, 3))
+                    await btn.first.click()
+                    log("✓ Click en ACEPTAR")
+                    aceptar_clicked = True
+                    break
+                except Exception as e:
+                    log(f"  ✗ No encontrado con '{selector}': {type(e).__name__}")
             
-            if not clicked:
-                log("⚠️ Botón no encontrado")
+            if not aceptar_clicked:
+                log("⚠️ Botón ACEPTAR no encontrado - continuando...")
+            
+            # Esperar a que el modal desaparezca
+            await asyncio.sleep(3)
+            await page.screenshot(path="step1b_after_aceptar.png", full_page=True)
+
+            # ========== PASO 2: CLICK EN BOTÓN "CONTINUE" (verde) ==========
+            log("🔘 PASO 2: Buscando botón CONTINUE...")
+            continue_clicked = False
+            
+            # Selectores posibles para el botón "Continue"
+            continue_selectors = [
+                "button:has-text('Continuar')",
+                "button:has-text('Continue')",
+                "button:has-text('Continuar / Continue')",
+                "[onclick*='continue']",
+                "button.btn-success",
+                ".btn:has-text('Continuar')",
+            ]
+            
+            for selector in continue_selectors:
+                try:
+                    log(f"  Intentando selector: {selector}")
+                    btn = page.locator(selector)
+                    await btn.first.wait_for(state="visible", timeout=5000)
+                    await asyncio.sleep(random.uniform(1.5, 3))
+                    await btn.first.click()
+                    log("✓ Click en CONTINUE")
+                    continue_clicked = True
+                    break
+                except Exception as e:
+                    log(f"  ✗ No encontrado con '{selector}': {type(e).__name__}")
+            
+            if not continue_clicked:
+                log("⚠️ Botón CONTINUE no encontrado")
 
             await asyncio.sleep(5)
 
