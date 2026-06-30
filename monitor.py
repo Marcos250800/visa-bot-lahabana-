@@ -134,8 +134,8 @@ async def check() -> tuple[str, str, str]:
             
             await asyncio.sleep(5)
 
-            # ========== PASO 3: CLICK EN BOTÓN "ACEPTAR" (Modal rosa) ==========
-            log("🔘 PASO 3: Buscando botón ACEPTAR...")
+            # ========== PASO 3: CLICK EN BOTÓN "ACEPTAR" (Modal HTML si lo hay) ==========
+            log("🔘 PASO 3: Buscando botón ACEPTAR (interno)...")
             await page.screenshot(path="step2_before_aceptar.png", full_page=True)
             
             aceptar_clicked = False
@@ -145,13 +145,10 @@ async def check() -> tuple[str, str, str]:
                 "button[aria-label*='Aceptar']",
             ]
             
-            # Buscar en frame principal
             for selector in aceptar_selectors:
                 try:
-                    log(f"  Frame principal - Selector: {selector}")
                     btn = page.locator(selector)
-                    await btn.first.wait_for(state="visible", timeout=3000)
-                    await asyncio.sleep(random.uniform(1.5, 3))
+                    await btn.first.wait_for(state="visible", timeout=2000)
                     await btn.first.click()
                     log("✓ Click en ACEPTAR (frame principal)")
                     aceptar_clicked = True
@@ -159,15 +156,12 @@ async def check() -> tuple[str, str, str]:
                 except:
                     pass
             
-            # Buscar en iframes si no encontró
             if not aceptar_clicked:
                 for i, frame in enumerate(page.frames):
                     for selector in aceptar_selectors:
                         try:
-                            log(f"  Frame {i} - Selector: {selector}")
                             btn = frame.locator(selector)
-                            await btn.first.wait_for(state="visible", timeout=3000)
-                            await asyncio.sleep(random.uniform(1.5, 3))
+                            await btn.first.wait_for(state="visible", timeout=2000)
                             await btn.first.click()
                             log(f"✓ Click en ACEPTAR (Frame {i})")
                             aceptar_clicked = True
@@ -178,13 +172,21 @@ async def check() -> tuple[str, str, str]:
                         break
             
             if not aceptar_clicked:
-                log("⚠️ Botón ACEPTAR no encontrado")
+                log("  (No hay botón ACEPTAR en el código, esto es NORMAL porque ya se aceptó la alerta de Welcome en fondo)")
             
             await asyncio.sleep(3)
             await page.screenshot(path="step3_after_aceptar.png", full_page=True)
 
             # ========== PASO 4: CLICK EN BOTÓN "CONTINUAR" (verde) ==========
-            log("🔘 PASO 4: Buscando botón CONTINUAR...")
+            log("🔘 PASO 4: Esperando a que cargue la página y buscando botón CONTINUAR...")
+            
+            # Esperamos a que la red se calme por si hay Cloudflare u otro sistema cargando
+            try:
+                await page.wait_for_load_state("networkidle", timeout=10000)
+            except:
+                pass
+                
+            await asyncio.sleep(3)
             
             continue_clicked = False
             continue_selectors = [
@@ -199,12 +201,12 @@ async def check() -> tuple[str, str, str]:
             # Buscar en frame principal
             for selector in continue_selectors:
                 try:
-                    log(f"  Frame principal - Selector: {selector}")
+                    log(f"  Frame principal - Intentando: {selector}")
                     btn = page.locator(selector)
                     await btn.first.wait_for(state="visible", timeout=3000)
-                    await asyncio.sleep(random.uniform(1.5, 3))
+                    await asyncio.sleep(random.uniform(1, 2))
                     await btn.first.click()
-                    log(f"✓ Click en CONTINUAR (frame principal - {selector})")
+                    log(f"✓ Click en CONTINUAR exitoso (Frame principal)")
                     continue_clicked = True
                     break
                 except:
@@ -215,12 +217,12 @@ async def check() -> tuple[str, str, str]:
                 for i, frame in enumerate(page.frames):
                     for selector in continue_selectors:
                         try:
-                            log(f"  Frame {i} - Selector: {selector}")
+                            log(f"  Frame {i} - Intentando: {selector}")
                             btn = frame.locator(selector)
-                            await btn.first.wait_for(state="visible", timeout=2000)
-                            await asyncio.sleep(random.uniform(1.5, 3))
+                            await btn.first.wait_for(state="visible", timeout=3000)
+                            await asyncio.sleep(random.uniform(1, 2))
                             await btn.first.click()
-                            log(f"✓ Click en CONTINUAR (Frame {i} - {selector})")
+                            log(f"✓ Click en CONTINUAR exitoso (Frame {i})")
                             continue_clicked = True
                             break
                         except:
@@ -229,7 +231,7 @@ async def check() -> tuple[str, str, str]:
                         break
             
             if not continue_clicked:
-                log("⚠️ Botón CONTINUAR no encontrado")
+                log("⚠️ Error crítico: Botón CONTINUAR no encontrado en toda la página ni sus iframes.")
 
             await asyncio.sleep(5)
 
