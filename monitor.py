@@ -316,3 +316,6 @@ async def main() -> int:
     # Guardar HTML siempre para depurar
     Path("last_run.html").write_text(content[:300_000])
     return 0
+
+if __name__ == "__main__":
+       sys.exit(asyncio.run(main()))
