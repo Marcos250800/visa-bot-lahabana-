@@ -1,5 +1,5 @@
 """
-Monitor FINAL - CON ID EXACTO DEL BOTÓN
+Monitor FINAL v8 - Espera Cloudflare antes de clickear
 """
 
 import asyncio
@@ -18,7 +18,7 @@ STATE_FILE = Path("state.txt")
 
 WIDGET_MARKERS = ["bookitit", "Cancelar o consultar"]
 NO_CITAS = ["No hay horas disponibles", "Inténtelo de nuevo"]
-CF_MARKERS = ["challenges.cloudflare.com", "Just a moment"]
+CF_MARKERS = ["challenges.cloudflare.com", "Just a moment", "Verifying you are human"]
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "").strip()
 CHAT_ID = os.environ.get("CHAT_ID", "").strip()
@@ -50,7 +50,7 @@ def notify(msg: str, photo: str = None) -> None:
                 json={"chat_id": CHAT_ID, "text": msg, "parse_mode": "Markdown"},
                 timeout=15,
             )
-        log("✓ Telegram sent")
+        log("✓ Telegram")
     except Exception as e:
         log(f"✗ Telegram: {e}")
 
@@ -83,40 +83,45 @@ async def check() -> tuple[str, str, str]:
             log("🌐 Navegando...")
             await asyncio.sleep(3)
             await page.goto(WIDGET_URL, wait_until="domcontentloaded", timeout=60000)
-            log("✓ Página cargada")
+            log("✓ DOM loaded")
 
-            log("⏳ Cloudflare check (50s)...")
-            await asyncio.sleep(50)
+            # CLOUDFLARE CHALLENGE
+            log("⏳ Cloudflare (70s)...")
+            for i in range(7):
+                await asyncio.sleep(10)
+                log(f"  {(i+1)*10}s")
 
             await page.screenshot(path="step1_after_load.png", full_page=True)
 
-            # CLICK CON ID EXACTO
-            log("🔘 Clickeando botón con ID: idCaptchaButton...")
+            # CLICK BOTÓN
+            log("🔘 Clickeando #idCaptchaButton...")
             try:
                 btn = page.locator("#idCaptchaButton")
-                await btn.wait_for(state="visible", timeout=10000)
-                await asyncio.sleep(random.uniform(1, 2))
+                await btn.wait_for(state="visible", timeout=15000)
+                await asyncio.sleep(random.uniform(2, 4))
                 await btn.click()
-                log("✓ Click exitoso")
+                log("✓ Click OK")
             except Exception as e:
-                log(f"⚠️ No pudo clickear: {e}")
+                log(f"⚠️ Click failed: {e}")
 
-            await asyncio.sleep(3)
+            await asyncio.sleep(5)
 
-            log("⏳ Esperando widget Bookitit (90s)...")
+            # WIDGET RENDER
+            log("⏳ Widget (90s)...")
             try:
                 await page.wait_for_load_state("networkidle", timeout=80000)
-                log("✓ Network idle")
             except:
-                log("⚠️ networkidle timeout")
-
-            await asyncio.sleep(30)
+                pass
+            
+            for i in range(9):
+                await asyncio.sleep(10)
+                log(f"  {(i+1)*10}s")
 
             await page.screenshot(path="step2_final.png", full_page=True)
 
-            # OBTENER HTML
+            # HTML
             html = await page.content()
-            log(f"✓ HTML obtenido: {len(html)} chars")
+            log(f"✓ HTML: {len(html)} chars")
             
             # FRAMES
             for i, frame in enumerate(page.frames):
@@ -148,7 +153,7 @@ async def main() -> int:
     try:
         estado, html, shot = await check()
     except Exception as e:
-        log(f"❌ Error: {e}")
+        log(f"❌ {e}")
         traceback.print_exc()
         if read_state() != "error":
             notify(f"⚠️ Error: {str(e)[:80]}")
@@ -160,8 +165,7 @@ async def main() -> int:
 
     if estado == "available":
         if prev != "available":
-            msg = f"🎉 *¡CITAS DISPONIBLES!*\n\n👉 [Reservar]({WIDGET_URL})"
-            notify(msg, shot)
+            notify(f"🎉 *¡CITAS DISPONIBLES!*\n\n👉 [Reservar]({WIDGET_URL})", shot)
         write_state("available")
     elif estado == "unavailable":
         write_state("unavailable")
