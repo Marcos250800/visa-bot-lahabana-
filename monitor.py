@@ -1,5 +1,5 @@
 """
-Monitor FINAL v8 - Espera Cloudflare antes de clickear
+Monitor FINAL v9 - Buscar botón en iframes
 """
 
 import asyncio
@@ -18,7 +18,7 @@ STATE_FILE = Path("state.txt")
 
 WIDGET_MARKERS = ["bookitit", "Cancelar o consultar"]
 NO_CITAS = ["No hay horas disponibles", "Inténtelo de nuevo"]
-CF_MARKERS = ["challenges.cloudflare.com", "Just a moment", "Verifying you are human"]
+CF_MARKERS = ["challenges.cloudflare.com", "Just a moment"]
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "").strip()
 CHAT_ID = os.environ.get("CHAT_ID", "").strip()
@@ -85,7 +85,6 @@ async def check() -> tuple[str, str, str]:
             await page.goto(WIDGET_URL, wait_until="domcontentloaded", timeout=60000)
             log("✓ DOM loaded")
 
-            # CLOUDFLARE CHALLENGE
             log("⏳ Cloudflare (70s)...")
             for i in range(7):
                 await asyncio.sleep(10)
@@ -93,20 +92,40 @@ async def check() -> tuple[str, str, str]:
 
             await page.screenshot(path="step1_after_load.png", full_page=True)
 
-            # CLICK BOTÓN
-            log("🔘 Clickeando #idCaptchaButton...")
+            # CLICK BOTÓN - BUSCAR EN IFRAMES
+            log("🔘 Buscando botón...")
+            clicked = False
+            
+            # Frame principal
             try:
                 btn = page.locator("#idCaptchaButton")
-                await btn.wait_for(state="visible", timeout=15000)
+                await btn.wait_for(state="visible", timeout=5000)
                 await asyncio.sleep(random.uniform(2, 4))
                 await btn.click()
-                log("✓ Click OK")
-            except Exception as e:
-                log(f"⚠️ Click failed: {e}")
+                log("✓ Click OK (frame principal)")
+                clicked = True
+            except:
+                log("  No en frame principal")
+            
+            # Iframes
+            if not clicked:
+                for i, frame in enumerate(page.frames):
+                    try:
+                        btn = frame.locator("#idCaptchaButton")
+                        await btn.wait_for(state="visible", timeout=5000)
+                        await asyncio.sleep(random.uniform(2, 4))
+                        await btn.click()
+                        log(f"✓ Click OK (Frame {i})")
+                        clicked = True
+                        break
+                    except:
+                        pass
+            
+            if not clicked:
+                log("⚠️ Botón no encontrado")
 
             await asyncio.sleep(5)
 
-            # WIDGET RENDER
             log("⏳ Widget (90s)...")
             try:
                 await page.wait_for_load_state("networkidle", timeout=80000)
@@ -119,11 +138,9 @@ async def check() -> tuple[str, str, str]:
 
             await page.screenshot(path="step2_final.png", full_page=True)
 
-            # HTML
             html = await page.content()
             log(f"✓ HTML: {len(html)} chars")
             
-            # FRAMES
             for i, frame in enumerate(page.frames):
                 try:
                     fhtml = await frame.content()
@@ -132,7 +149,6 @@ async def check() -> tuple[str, str, str]:
                 except:
                     pass
 
-            # ANÁLISIS
             has_widget = any(m in html for m in WIDGET_MARKERS)
             has_no_citas = any(m in html for m in NO_CITAS)
             has_cf = any(m in html for m in CF_MARKERS)
