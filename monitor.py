@@ -79,6 +79,9 @@ async def check() -> tuple[str, str, str]:
             ignore_https_errors=True,
         )
         
+        # Manejar automáticamente cualquier alerta nativa (como el "Welcome / Bienvenido")
+        c.on("dialog", lambda dialog: asyncio.create_task(dialog.accept()))
+        
         await c.add_init_script(STEALTH)
         page = await c.new_page()
 
@@ -110,6 +113,17 @@ async def check() -> tuple[str, str, str]:
                     await asyncio.sleep(random.uniform(1, 2))
                     await link.first.click()
                     log("✓ Click en enlace de reserva")
+                    
+                    # IMPORTANTE: Muchos sitios de consulados abren el widget en una NUEVA pestaña (target="_blank")
+                    # Damos un pequeño margen para que se abra la pestaña
+                    await asyncio.sleep(4)
+                    if len(c.pages) > 1:
+                        page = c.pages[-1] # Tomamos la última pestaña abierta
+                        await page.bring_to_front()
+                        log("✓ Cambiado a la nueva pestaña abierta")
+                    else:
+                        log("✓ Seguimos en la misma pestaña")
+                        
                     link_clicked = True
                     break
                 except Exception as e:
@@ -173,54 +187,46 @@ async def check() -> tuple[str, str, str]:
             log("🔘 PASO 4: Buscando botón CONTINUAR...")
             
             continue_clicked = False
+            continue_selectors = [
+                "#idCaptchaButton",
+                "button:has-text('Continuar')",
+                "button:has-text('Continue')",
+                "button.btn-success",
+                "input[value='Continuar']",
+                "a:has-text('Continuar')"
+            ]
             
-            # Primero intenta el ID directo (más fiable)
-            try:
-                log("  Intentando ID directo: #idCaptchaButton")
-                btn = page.locator("#idCaptchaButton")
-                await btn.wait_for(state="visible", timeout=5000)
-                await asyncio.sleep(random.uniform(1.5, 3))
-                await btn.click()
-                log("✓ Click en CONTINUAR (ID directo)")
-                continue_clicked = True
-            except Exception as e:
-                log(f"  ✗ ID en frame principal: {type(e).__name__}")
+            # Buscar en frame principal
+            for selector in continue_selectors:
+                try:
+                    log(f"  Frame principal - Selector: {selector}")
+                    btn = page.locator(selector)
+                    await btn.first.wait_for(state="visible", timeout=3000)
+                    await asyncio.sleep(random.uniform(1.5, 3))
+                    await btn.first.click()
+                    log(f"✓ Click en CONTINUAR (frame principal - {selector})")
+                    continue_clicked = True
+                    break
+                except:
+                    pass
             
-            # Buscar en iframes
+            # Buscar en iframes si no encontró
             if not continue_clicked:
                 for i, frame in enumerate(page.frames):
-                    try:
-                        log(f"  Frame {i} - ID: #idCaptchaButton")
-                        btn = frame.locator("#idCaptchaButton")
-                        await btn.wait_for(state="visible", timeout=3000)
-                        await asyncio.sleep(random.uniform(1.5, 3))
-                        await btn.click()
-                        log(f"✓ Click en CONTINUAR (Frame {i} - ID)")
-                        continue_clicked = True
+                    for selector in continue_selectors:
+                        try:
+                            log(f"  Frame {i} - Selector: {selector}")
+                            btn = frame.locator(selector)
+                            await btn.first.wait_for(state="visible", timeout=2000)
+                            await asyncio.sleep(random.uniform(1.5, 3))
+                            await btn.first.click()
+                            log(f"✓ Click en CONTINUAR (Frame {i} - {selector})")
+                            continue_clicked = True
+                            break
+                        except:
+                            pass
+                    if continue_clicked:
                         break
-                    except:
-                        pass
-            
-            # Fallback: buscar por texto si el ID no funciona
-            if not continue_clicked:
-                continue_selectors = [
-                    "button:has-text('Continuar')",
-                    "button:has-text('Continue')",
-                    "button.btn-success",
-                ]
-                
-                for selector in continue_selectors:
-                    try:
-                        log(f"  Fallback - Selector: {selector}")
-                        btn = page.locator(selector)
-                        await btn.first.wait_for(state="visible", timeout=3000)
-                        await asyncio.sleep(random.uniform(1.5, 3))
-                        await btn.first.click()
-                        log(f"✓ Click en CONTINUAR (Fallback: {selector})")
-                        continue_clicked = True
-                        break
-                    except:
-                        pass
             
             if not continue_clicked:
                 log("⚠️ Botón CONTINUAR no encontrado")
