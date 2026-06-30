@@ -1,10 +1,10 @@
 """
 Monitor de citas — Consulado de España en La Habana
 
-VERSIÓN 6 - UNDETECTED CHROMEDRIVER (SOLUCIÓN FINAL)
-- undetected-chromedriver: bypass de Cloudflare v2
-- Selenium con Chrome real (no headless detectable)
-- Anti-detección profunda
+VERSIÓN 7 - PLAYWRIGHT + STEALTH PLUGIN EFFECT
+- Delays largos entre acciones (simula humano)
+- Múltiples reintentos
+- Rate limiting realista
 """
 
 import asyncio
@@ -12,51 +12,38 @@ import os
 import sys
 import traceback
 import random
-import time
 from pathlib import Path
 
 import requests
-from selenium import webdriver
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-import undetected_chromedriver as uc
+from playwright.async_api import async_playwright
 
-WIDGET_URL = (
-    "https://www.citaconsular.es/es/hosteds/widgetdefault/"
-    "2686d3b68dc9e0ba3c6a20437e9cc7"
-)
-PUBLIC_URL = (
-    "https://www.exteriores.gob.es/Consulados/lahabana/es/ServiciosConsulares/"
-    "Paginas/index.aspx?scco=Cuba&scd=166&scca=Visados"
-    "&scs=Visados+Nacionales+-+Visado+de+residencia+de+familiares"
-    "+de+personas+de+nacionalidad+espa%c3%b1ola"
-)
+WIDGET_URL = "https://www.citaconsular.es/es/hosteds/widgetdefault/2686d3b68dc9e0ba3c6a20437e9cc7"
+PUBLIC_URL = "https://www.exteriores.gob.es/Consulados/lahabana/es/ServiciosConsulares/Paginas/index.aspx?scco=Cuba&scd=166&scca=Visados&scs=Visados+Nacionales+-+Visado+de+residencia+de+familiares+de+personas+de+nacionalidad+espa%c3%b1ola"
 STATE_FILE = Path("state.txt")
 
-WIDGET_LOADED_MARKERS = [
-    "bookitit",
-    "Bookitit",
-    "Consulado General de España",
-    "Cancelar o consultar mis reservas",
-]
-
-NO_AVAILABILITY_MARKERS = [
-    "No hay horas disponibles",
-    "no hay horas disponibles",
-    "Inténtelo de nuevo dentro de unos días",
-]
-
-CLOUDFLARE_MARKERS = [
-    "challenges.cloudflare.com",
-    "cf-challenge",
-    "Verifying you are human",
-    "Just a moment",
-    "Enable JavaScript",
-]
+WIDGET_LOADED_MARKERS = ["bookitit", "Bookitit", "Consulado General de España", "Cancelar o consultar"]
+NO_AVAILABILITY_MARKERS = ["No hay horas disponibles", "no hay horas disponibles", "Inténtelo de nuevo"]
+CLOUDFLARE_MARKERS = ["challenges.cloudflare.com", "cf-challenge", "Verifying you are human", "Just a moment"]
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "").strip()
 CHAT_ID = os.environ.get("CHAT_ID", "").strip()
+
+STEALTH_JS = """
+(() => {
+    Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+    Object.defineProperty(navigator, 'vendor', {get: () => 'Google Inc.'});
+    Object.defineProperty(navigator, 'languages', {get: () => ['es-ES', 'es', 'en']});
+    Object.defineProperty(navigator, 'plugins', {get: () => [1,2,3,4,5]});
+    window.chrome = {runtime: {}};
+    const originalQuery = window.navigator.permissions.query;
+    window.navigator.permissions.query = (parameters) => (
+        parameters.name === 'notifications'
+            ? Promise.resolve({state: Notification.permission})
+            : originalQuery(parameters)
+    );
+    delete navigator.__proto__.webdriver;
+})();
+"""
 
 def log(msg: str) -> None:
     print(f"[BOT] {msg}", flush=True)
@@ -64,178 +51,183 @@ def log(msg: str) -> None:
 def notify_text(message: str) -> None:
     if not TELEGRAM_TOKEN or not CHAT_ID:
         return
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     try:
         requests.post(
-            url,
-            json={
-                "chat_id": CHAT_ID,
-                "text": message,
-                "parse_mode": "Markdown",
-            },
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+            json={"chat_id": CHAT_ID, "text": message, "parse_mode": "Markdown"},
             timeout=15,
         )
-        log("✓ Mensaje enviado a Telegram")
+        log("✓ Telegram OK")
     except Exception as e:
-        log(f"✗ Error Telegram: {e}")
+        log(f"✗ Telegram: {e}")
 
 def notify_with_photo(message: str, photo_path: str) -> None:
-    if not TELEGRAM_TOKEN or not CHAT_ID:
-        return
-    if not Path(photo_path).exists():
+    if not TELEGRAM_TOKEN or not CHAT_ID or not Path(photo_path).exists():
         notify_text(message)
         return
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto"
     try:
         with open(photo_path, "rb") as f:
             requests.post(
-                url,
-                data={
-                    "chat_id": CHAT_ID,
-                    "caption": message,
-                    "parse_mode": "Markdown",
-                },
+                f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto",
+                data={"chat_id": CHAT_ID, "caption": message, "parse_mode": "Markdown"},
                 files={"photo": f},
                 timeout=30,
             )
-        log("✓ Foto enviada")
+        log("✓ Foto OK")
     except Exception as e:
-        log(f"✗ Error foto: {e}")
-        notify_text(message)
+        log(f"✗ Foto: {e}")
 
 def read_state() -> str:
-    if STATE_FILE.exists():
-        return STATE_FILE.read_text().strip()
-    return "unknown"
+    return STATE_FILE.read_text().strip() if STATE_FILE.exists() else "unknown"
 
 def write_state(value: str) -> None:
     STATE_FILE.write_text(value)
 
-def check_availability() -> tuple[str, str, str]:
-    """Usar undetected-chromedriver para bypass"""
-    
-    log("🔓 Iniciando undetected-chromedriver...")
-    
-    options = uc.ChromeOptions()
-    options.add_argument("--no-sandbox")
-    options.add_argument("--disable-dev-shm-usage")
-    options.add_argument("--disable-blink-features=AutomationControlled")
-    options.add_argument("--start-maximized")
-    options.add_argument("--disable-extensions")
-    options.add_argument("--disable-sync")
-    options.add_argument("--disable-gpu")
-    options.add_argument("--no-first-run")
-    options.add_argument("--no-default-browser-check")
-    
-    driver = None
-    try:
-        driver = uc.Chrome(options=options, version_main=None)
-        
-        log(f"🌐 Navegando a {WIDGET_URL}")
-        driver.get(WIDGET_URL)
-        
-        log("⏳ Esperando Cloudflare (40s)...")
-        time.sleep(40)
-        
-        # Screenshot 1
-        driver.save_screenshot("step1_after_load.png")
-        log("✓ Screenshot 1")
-        
-        # Buscar Continue
-        log("🔘 Buscando botón Continue...")
+async def click_button(page, timeout=10000) -> bool:
+    """Intenta hacer click en botón Continue con múltiples estrategias"""
+    selectors = [
+        "text=Continue / Continuar",
+        "text=Continuar",
+        "button:has-text('Continuar')",
+        "a:has-text('Continuar')",
+        "button[type='submit']",
+    ]
+    for sel in selectors:
         try:
-            wait = WebDriverWait(driver, 10)
-            buttons = [
-                (By.XPATH, "//button[contains(text(), 'Continuar')]"),
-                (By.XPATH, "//a[contains(text(), 'Continuar')]"),
-                (By.XPATH, "//button[contains(text(), 'Continue')]"),
-                (By.XPATH, "//input[@value*='ontinuar']"),
-            ]
-            
-            for by, xpath in buttons:
-                try:
-                    btn = wait.until(EC.element_to_be_clickable((by, xpath)))
-                    time.sleep(random.uniform(1, 2))
-                    btn.click()
-                    log("✓ Click en Continue")
-                    time.sleep(3)
-                    break
-                except:
-                    continue
-        except Exception as e:
-            log(f"⚠️ No se encontró Continue: {e}")
+            await page.locator(sel).first.click(timeout=timeout)
+            log(f"✓ Click: {sel}")
+            return True
+        except:
+            pass
+    return False
+
+async def check_availability_attempt(attempt: int) -> tuple[str, str, str]:
+    """Un intento de check"""
+    log(f"\n--- Intento {attempt + 1} ---")
+    
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(
+            headless=True,
+            args=[
+                "--disable-blink-features=AutomationControlled",
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-gpu",
+                "--disable-sync",
+                "--disable-extensions",
+            ],
+        )
         
-        log("⏳ Esperando widget (40s)...")
-        time.sleep(40)
+        context = await browser.new_context(
+            locale="es-ES",
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+            viewport={"width": 1920, "height": 1080},
+            extra_http_headers={
+                "Accept-Language": "es-ES,es;q=0.9,en;q=0.8",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "DNT": "1",
+            },
+            ignore_https_errors=True,
+        )
         
-        # Screenshot 2
-        driver.save_screenshot("step2_final.png")
-        log("✓ Screenshot 2")
-        
-        # Obtener HTML
-        full_content = driver.page_source
-        log(f"✓ HTML: {len(full_content)} chars")
-        
-        # Analizar
-        widget_loaded = any(m in full_content for m in WIDGET_LOADED_MARKERS)
-        no_disponible = any(m in full_content for m in NO_AVAILABILITY_MARKERS)
-        cloudflare_blocking = any(m in full_content for m in CLOUDFLARE_MARKERS)
-        
-        log(f"📊 Widget: {widget_loaded}")
-        log(f"📊 Sin citas: {no_disponible}")
-        log(f"📊 CF bloquea: {cloudflare_blocking}")
-        
-        if not widget_loaded:
-            estado = "blocked" if cloudflare_blocking else "unknown"
-        else:
-            estado = "unavailable" if no_disponible else "available"
-        
-        return estado, full_content, "step2_final.png"
-        
-    except Exception as e:
-        log(f"❌ Error: {e}")
-        traceback.print_exc()
-        raise
-        
-    finally:
-        if driver:
+        await context.add_init_script(STEALTH_JS)
+        page = await context.new_page()
+
+        try:
+            # NAVEGACIÓN
+            log(f"🌐 GET {WIDGET_URL}")
+            await asyncio.sleep(random.uniform(3, 6))
+            await page.goto(WIDGET_URL, wait_until="domcontentloaded", timeout=60000)
+            log("✓ DOM loaded")
+
+            # ESPERA CLOUDFLARE (MUY LARGA)
+            log("⏳ Cloudflare check (50s)...")
+            for i in range(5):
+                await asyncio.sleep(10)
+                log(f"  {(i+1)*10}s...")
+
+            await page.screenshot(path="step1_after_load.png", full_page=True)
+
+            # CLICK CONTINUE
+            log("🔘 Click Continue...")
+            await click_button(page)
+            await asyncio.sleep(random.uniform(2, 4))
+
+            # ESPERA WIDGET (MUY LARGA)
+            log("⏳ Widget render (60s)...")
             try:
-                driver.quit()
+                await page.wait_for_load_state("networkidle", timeout=50000)
             except:
                 pass
+            
+            for i in range(6):
+                await asyncio.sleep(10)
+                log(f"  {(i+1)*10}s...")
 
-def main() -> int:
+            await page.screenshot(path="step2_final.png", full_page=True)
+
+            # OBTENER CONTENIDO
+            full_content = await page.content()
+            log(f"✓ HTML: {len(full_content)} chars")
+
+            # ANALIZAR
+            widget_loaded = any(m in full_content for m in WIDGET_LOADED_MARKERS)
+            no_disponible = any(m in full_content for m in NO_AVAILABILITY_MARKERS)
+            cloudflare_blocking = any(m in full_content for m in CLOUDFLARE_MARKERS)
+
+            log(f"📊 Widget: {widget_loaded} | Sin citas: {no_disponible} | CF: {cloudflare_blocking}")
+
+            if not widget_loaded:
+                estado = "blocked" if cloudflare_blocking else "unknown"
+            else:
+                estado = "unavailable" if no_disponible else "available"
+
+            return estado, full_content, "step2_final.png"
+
+        finally:
+            await browser.close()
+
+async def check_availability() -> tuple[str, str, str]:
+    """Reintentos automáticos"""
+    for attempt in range(3):  # 3 intentos
+        try:
+            return await check_availability_attempt(attempt)
+        except Exception as e:
+            log(f"❌ Intento {attempt + 1} falló: {e}")
+            if attempt < 2:
+                log(f"⏳ Esperando antes de reintentar...")
+                await asyncio.sleep(random.uniform(5, 10))
+            else:
+                raise
+
+async def main() -> int:
     try:
-        estado, content, screenshot = check_availability()
+        estado, content, screenshot = await check_availability()
     except Exception as e:
-        err = f"⚠️ *Error crítico*\n\n`{type(e).__name__}: {e}`"
+        err = f"⚠️ *Error*\n\n`{str(e)[:100]}`"
         log(err)
         if read_state() != "error":
             notify_text(err)
             write_state("error")
         return 1
-    
+
     prev = read_state()
-    log(f"Estado: {prev} → {estado}")
-    
+    log(f"\n📋 {prev} → {estado}\n")
+
     if estado == "available":
         if prev != "available":
-            msg = (
-                "🎉 *¡CITAS DISPONIBLES!*\n\n"
-                "Consulado: La Habana\n\n"
-                f"👉 [RESERVAR YA]({WIDGET_URL})"
-            )
+            msg = f"🎉 *¡CITAS DISPONIBLES!*\n\n👉 [Reservar]({WIDGET_URL})"
             notify_with_photo(msg, screenshot)
         write_state("available")
-    
+
     elif estado == "unavailable":
         write_state("unavailable")
-    
+
     elif estado == "blocked":
-        log("Cloudflare bloqueó - sin cambiar estado")
-    
+        log("(Sin cambios - Cloudflare)")
+
     Path("last_run.html").write_text(content[:300_000])
     return 0
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(asyncio.run(main()))
